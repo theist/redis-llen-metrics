@@ -7,17 +7,21 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
 var rdb *redis.Client
 var ctx = context.Background()
+var metricMemory = MetricsStorage{}
 
 type Config struct {
-	Host string
-	Port int
-	Db   int
+	Host     string
+	Port     int
+	Db       int
+	LoopMode bool
+	LoopTime int
 }
 
 func ListRedisLists() []string {
@@ -72,13 +76,20 @@ func LoadOsDefaults(cfg *Config) {
 		}
 		cfg.Db = d
 	}
+	cfg.LoopMode = false
+	cfg.LoopTime = 0
 }
 
 func LoadFlagsDefaults(cfg *Config) {
 	flag.StringVar(&cfg.Host, "host", cfg.Host, "Redis host")
 	flag.IntVar(&cfg.Port, "port", cfg.Port, "Redis port")
 	flag.IntVar(&cfg.Db, "db", cfg.Db, "Redis db")
+	flag.IntVar(&cfg.LoopTime, "loop-time", cfg.LoopTime, "Loop time in seconds")
 	flag.Parse()
+
+	if cfg.LoopTime > 0 {
+		cfg.LoopMode = true
+	}
 }
 
 func ValidateConfig(cfg Config) error {
@@ -91,6 +102,9 @@ func ValidateConfig(cfg Config) error {
 	redisConnected := rdb.Ping(ctx).Val()
 	if redisConnected != "PONG" {
 		return fmt.Errorf("redis connection to %s:%d failed", cfg.Host, cfg.Port)
+	}
+	if cfg.LoopMode && cfg.LoopTime < 10 {
+		return fmt.Errorf("loop time must be greater than 10 seconds")
 	}
 	return nil
 }
@@ -106,11 +120,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid config: %v", err)
 	}
+	fmt.Printf("Debug config %v\n", cfg)
 
-	sizes := map[string]int{}
-	for _, list := range ListRedisLists() {
-		size := rdb.LLen(ctx, list).Val()
-		fmt.Printf("%s: %d\n", list, size)
-		sizes[list] = int(size)
+	for cfg.LoopMode {
+		metricMemory.ResetMetrics()
+		for _, list := range ListRedisLists() {
+			size := rdb.LLen(ctx, list).Val()
+			metricMemory.AddMetric(Metric{list, int(size)})
+		}
+
+		for _, metric := range metricMemory.Metrics {
+			fmt.Printf("%s %d\n", metric.Name, metric.Value)
+		}
+
+		time.Sleep(time.Duration(cfg.LoopTime) * time.Second)
 	}
 }
