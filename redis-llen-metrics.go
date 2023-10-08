@@ -111,8 +111,28 @@ func ValidateConfig(cfg Config) error {
 
 func main() {
 	cfg := Config{}
+	backends := []Backend{}
+	backends = append(backends, new(TextBackend))
+	for _, backend := range backends {
+		backend.AddFlags()
+	}
 	LoadOsDefaults(&cfg)
 	LoadFlagsDefaults(&cfg)
+	if cfg.DumpConfig {
+		fmt.Printf("Config: %+v\n", cfg)
+		for _, backend := range backends {
+			fmt.Printf("Backend: %+v\n", backend)
+		}
+		os.Exit(0)
+	}
+
+	for _, backend := range backends {
+		backend.Activate()
+	}
+
+	for _, backend := range backends {
+		defer backend.Close()
+	}
 
 	redisConnect(cfg.Host, cfg.Port, cfg.Db)
 
@@ -128,8 +148,8 @@ func main() {
 			metricMemory.AddMetric(Metric{list, int(size)})
 		}
 
-		for _, metric := range metricMemory.Metrics {
-			fmt.Printf("%s %d\n", metric.Name, metric.Value)
+		for _, backend := range backends {
+			backend.PublishStats()
 		}
 
 		time.Sleep(time.Duration(cfg.LoopTime) * time.Second)
