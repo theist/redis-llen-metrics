@@ -113,6 +113,7 @@ func main() {
 	cfg := Config{}
 	backends := []Backend{}
 	backends = append(backends, new(TextBackend))
+	backends = append(backends, new(StatsDBackend))
 	for _, backend := range backends {
 		backend.AddFlags()
 	}
