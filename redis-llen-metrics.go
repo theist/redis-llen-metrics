@@ -17,11 +17,12 @@ var ctx = context.Background()
 var metricMemory = MetricsStorage{}
 
 type Config struct {
-	Host     string
-	Port     int
-	Db       int
-	LoopMode bool
-	LoopTime int
+	Host       string
+	Port       int
+	Db         int
+	LoopMode   bool
+	LoopTime   int
+	DumpConfig bool
 }
 
 func ListRedisLists() []string {
@@ -44,38 +45,36 @@ func redisConnect(host string, port int, db int) {
 	})
 }
 
+func OsEnvWithDefault(env, defaultValue string) string {
+	value, present := os.LookupEnv(env)
+	if present {
+		return value
+	}
+	return defaultValue
+}
+
 func LoadOsDefaults(cfg *Config) {
 	// Load environment variables if present, else set defaults.
 	// Defaults are set to localhost:6379, db 0.
 	// These can be overridden by passing in environment variables.
 	// e.g. REDIS_HOST=localhost REDIS_PORT=6379 REDIS_DB=0 redis-llen-metrics
 	// e.g. REDIS_HOST=localhost REDIS_PORT=6379 REDIS_DB=0 go run redis-llen-metrics.go -host=localhost -port=6379 -db=0
-	host, present := os.LookupEnv("REDIS_HOST")
-	if !present {
-		cfg.Host = "localhost"
-	} else {
-		cfg.Host = host
+
+	cfg.Host = OsEnvWithDefault("REDIS_HOST", "localhost")
+	port := OsEnvWithDefault("REDIS_PORT", "6379")
+	db := OsEnvWithDefault("REDIS_DB", "0")
+
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		log.Fatalf("Can't convert %v to int, review environment", port)
 	}
-	port, present := os.LookupEnv("REDIS_PORT")
-	if !present {
-		cfg.Port = 6379
-	} else {
-		p, err := strconv.Atoi(port)
-		if err != nil {
-			log.Fatalf("Can't convert %v to int, review environment", port)
-		}
-		cfg.Port = p
+	cfg.Port = p
+	d, err := strconv.Atoi(db)
+	if err != nil {
+		log.Fatalf("Can't convert %v to int, review environment", db)
 	}
-	db, present := os.LookupEnv("REDIS_PORT")
-	if !present {
-		cfg.Db = 0
-	} else {
-		d, err := strconv.Atoi(db)
-		if err != nil {
-			log.Fatalf("Can't convert %v to int, review environment", db)
-		}
-		cfg.Db = d
-	}
+	cfg.Db = d
+
 	cfg.LoopMode = false
 	cfg.LoopTime = 0
 }
@@ -85,6 +84,7 @@ func LoadFlagsDefaults(cfg *Config) {
 	flag.IntVar(&cfg.Port, "port", cfg.Port, "Redis port")
 	flag.IntVar(&cfg.Db, "db", cfg.Db, "Redis db")
 	flag.IntVar(&cfg.LoopTime, "loop-time", cfg.LoopTime, "Loop time in seconds")
+	flag.BoolVar(&cfg.DumpConfig, "config", false, "Dump config")
 	flag.Parse()
 
 	if cfg.LoopTime > 0 {
@@ -111,8 +111,28 @@ func ValidateConfig(cfg Config) error {
 
 func main() {
 	cfg := Config{}
+	backends := []Backend{}
+	backends = append(backends, new(TextBackend))
+	for _, backend := range backends {
+		backend.AddFlags()
+	}
 	LoadOsDefaults(&cfg)
 	LoadFlagsDefaults(&cfg)
+	if cfg.DumpConfig {
+		fmt.Printf("Config: %+v\n", cfg)
+		for _, backend := range backends {
+			fmt.Printf("Backend: %+v\n", backend)
+		}
+		os.Exit(0)
+	}
+
+	for _, backend := range backends {
+		backend.Activate()
+	}
+
+	for _, backend := range backends {
+		defer backend.Close()
+	}
 
 	redisConnect(cfg.Host, cfg.Port, cfg.Db)
 
@@ -120,7 +140,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid config: %v", err)
 	}
-	fmt.Printf("Debug config %v\n", cfg)
 
 	for cfg.LoopMode {
 		metricMemory.ResetMetrics()
@@ -129,8 +148,8 @@ func main() {
 			metricMemory.AddMetric(Metric{list, int(size)})
 		}
 
-		for _, metric := range metricMemory.Metrics {
-			fmt.Printf("%s %d\n", metric.Name, metric.Value)
+		for _, backend := range backends {
+			backend.PublishStats()
 		}
 
 		time.Sleep(time.Duration(cfg.LoopTime) * time.Second)
